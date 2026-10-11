@@ -384,7 +384,12 @@ class Manager:
     def start(self, module_name: str) -> None:
         module = self.resolve(module_name)
         if module is not None:
-            module.start(self.testing)
+            try:
+                module.start(self.testing)
+            except Exception:
+                # Keep the requested startup state for the host recovery poll.
+                module.started = True
+                logger.exception("Unable to start %s; recovery will retry", module_name)
         else:
             logger.error(f"Manager tried to start nonexistent module {module_name}")
 

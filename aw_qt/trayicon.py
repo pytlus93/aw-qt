@@ -23,6 +23,7 @@ from PyQt6.QtWidgets import (
 from . import autostart
 from .config import persist_module_autostart
 from .manager import Manager, Module
+from .recovery import ModuleRecovery
 from .profile import DEFAULT_PROFILE, TESTING_PROFILE
 
 logger = logging.getLogger(__name__)
@@ -102,6 +103,7 @@ class TrayIcon(QSystemTrayIcon):
         # autostart_modules (off when --autostart-modules overrides the config).
         self.persist_toggles = persist_toggles
         self._restart_timestamps: Dict[str, List[float]] = {}
+        self._recovery = ModuleRecovery()
         self._autostart_action: Optional[QAction] = None
 
         if port is None:
@@ -252,33 +254,13 @@ class TrayIcon(QSystemTrayIcon):
         QtCore.QTimer.singleShot(2000, rebuild_modules_menu)
 
         def check_module_status() -> None:
-            unexpected_exits = self.manager.get_unexpected_stops()
-            for module in unexpected_exits:
-                recent = self._recent_restart_count(module.name)
-                if recent < self.MAX_AUTO_RESTARTS:
-                    logger.info(
-                        f"Auto-restarting crashed module {module.name} "
-                        f"(attempt {recent + 1}/{self.MAX_AUTO_RESTARTS}"
-                        f" in {self.RESTART_WINDOW_SECONDS // 60}min window)"
-                    )
-                    module.stop()  # Clean up state
-                    module.start(self.testing)
-                    self._record_restart(module.name)
-                    self.showMessage(
-                        "ActivityWatch",
-                        f"Module {module.name} crashed and was auto-restarted",
-                        QSystemTrayIcon.MessageIcon.Warning,
-                        5000,
-                    )
-                else:
-                    logger.warning(
-                        f"Module {module.name} exceeded max auto-restarts "
-                        f"({self.MAX_AUTO_RESTARTS})"
-                    )
-                    show_module_failed_dialog(module)
-                    module.stop()
-
-            QtCore.QTimer.singleShot(5000, check_module_status)
+            try:
+                for module in self._recovery.check(self.manager.modules, self.testing):
+                    logger.warning("Recovered crashed module %s", module.name)
+            except Exception:
+                logger.exception("Module recovery poll failed")
+            finally:
+                QtCore.QTimer.singleShot(5000, check_module_status)
 
         QtCore.QTimer.singleShot(5000, check_module_status)
 
@@ -291,6 +273,7 @@ class TrayIcon(QSystemTrayIcon):
         enabled = module.toggle(self.testing)
         # Reset auto-restart timestamps on manual toggle
         self._restart_timestamps.pop(module.name, None)
+        self._recovery.forget(module)
         if not self.persist_toggles:
             return
         if self.manager.resolve(module.name) is not module:
