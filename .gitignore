@@ -6,3 +6,5 @@ dist
 build
 .mypy_cache
 *.pyc
+/local/
+/.pytest_cache/

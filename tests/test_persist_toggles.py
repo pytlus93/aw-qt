@@ -307,6 +307,7 @@ class TestTrayClick:
             profile=DEFAULT_PROFILE,
             persist_toggles=persist_toggles,
             _restart_timestamps={"aw-watcher-afk": [1.0]},
+            _recovery=MagicMock(),
         )
         return fake, lambda module: TrayIcon._on_module_clicked(fake, module)
 

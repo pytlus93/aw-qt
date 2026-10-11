@@ -23,6 +23,7 @@ from PyQt6.QtWidgets import (
 from . import autostart
 from .config import persist_module_autostart
 from .manager import Manager, Module
+from .module_actions import ActionRunner, ModuleAction, load_actions
 from .recovery import ModuleRecovery
 from .profile import DEFAULT_PROFILE, TESTING_PROFILE
 
@@ -105,6 +106,12 @@ class TrayIcon(QSystemTrayIcon):
         self._restart_timestamps: Dict[str, List[float]] = {}
         self._recovery = ModuleRecovery()
         self._autostart_action: Optional[QAction] = None
+        self._action_runner = ActionRunner()
+        self._module_toggles = []
+        self._module_actions = []
+        app = QApplication.instance()
+        if app is not None:
+            app.aboutToQuit.connect(self._action_runner.close)
 
         if port is None:
             port = 5666 if testing else 5600
@@ -181,6 +188,7 @@ class TrayIcon(QSystemTrayIcon):
 
         modulesMenu = menu.addMenu("Modules")
         self._build_modulemenu(modulesMenu)
+        modulesMenu.aboutToShow.connect(lambda: self._build_modulemenu(modulesMenu))
 
         menu.addSeparator()
         menu.addAction(
@@ -243,12 +251,7 @@ class TrayIcon(QSystemTrayIcon):
             box.show()
 
         def rebuild_modules_menu() -> None:
-            for action in modulesMenu.actions():
-                if action.isEnabled():
-                    module: Module = action.data()
-                    alive = module.is_alive()
-                    action.setChecked(alive)
-
+            self._refresh_module_actions()
             QtCore.QTimer.singleShot(2000, rebuild_modules_menu)
 
         QtCore.QTimer.singleShot(2000, rebuild_modules_menu)
@@ -294,6 +297,8 @@ class TrayIcon(QSystemTrayIcon):
 
     def _build_modulemenu(self, moduleMenu: QMenu) -> None:
         moduleMenu.clear()
+        self._module_toggles = []
+        self._module_actions = []
 
         def add_module_menuitem(module: Module) -> None:
             title = module.name
@@ -301,11 +306,26 @@ class TrayIcon(QSystemTrayIcon):
             def on_toggle(m: Module = module) -> None:
                 self._on_module_clicked(m)
 
-            ac = moduleMenu.addAction(title, on_toggle)
+            actions = load_actions(module.name, module.path)
+            target = moduleMenu
+            if actions:
+                target = moduleMenu.addMenu(title)
+            ac = target.addAction("Running" if actions else title, on_toggle)
 
             ac.setData(module)
             ac.setCheckable(True)
             ac.setChecked(module.is_alive())
+            self._module_toggles.append((ac, module))
+            if actions:
+                target.addSeparator()
+                for action in actions:
+                    item = target.addAction(
+                        action.label,
+                        lambda checked=False, m=module, a=action: self._on_module_action(
+                            m, a
+                        ),
+                    )
+                    self._module_actions.append((item, module, action))
 
         for location, modules in [
             ("bundled", self.manager.modules_bundled),
@@ -316,6 +336,36 @@ class TrayIcon(QSystemTrayIcon):
 
             for module in sorted(modules, key=lambda m: m.name):
                 add_module_menuitem(module)
+        self._refresh_module_actions()
+
+    def _refresh_module_actions(self) -> None:
+        for action_id, code in self._action_runner.poll():
+            logger.warning("Module action %s exited with status %s", action_id, code)
+            self.showMessage(
+                "Module action failed",
+                "The module action exited unsuccessfully. Check the module's logs.",
+            )
+        for item, module in self._module_toggles:
+            item.setChecked(module.is_alive())
+        for item, module, action in self._module_actions:
+            item.setEnabled(
+                (not action.requires_running or module.is_alive())
+                and not self._action_runner.active(module.path, action)
+            )
+
+    def _on_module_action(self, module: Module, action: ModuleAction) -> None:
+        try:
+            self._action_runner.launch(
+                module, action, self.profile, self.testing, self.root_url
+            )
+        except Exception:
+            # Do not log helper args/config contents, or let a Qt slot abort AW.
+            logger.warning("Could not launch action %s for %s", action.id, module.name)
+            self.showMessage(
+                "Module action unavailable",
+                "Could not open this module action. Reopen the Modules menu and try again.",
+            )
+        self._refresh_module_actions()
 
 
 def exit(manager: Manager) -> None:

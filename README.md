@@ -10,3 +10,7 @@ Use `--profile NAME` to run an isolated named instance. Enabling **Start at logi
 from that instance's tray registers the same profile-specific launch command.
 
 For instructions how to build, see `Makefile`.
+
+Optional module-specific tray submenus are documented in
+[`docs/module-actions.md`](docs/module-actions.md). They are independent of the
+Python/Rust server choice and preserve start/stop for modules without a manifest.
